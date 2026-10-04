@@ -20,27 +20,29 @@ Config.InitializationTimer      = 1 -- could set this to 0, just keep in mind, m
 
 -- == General Configuration == --
 Config.SwapTargetsTimer         = 2 -- Time in seconds before the target is swapped, if a new target is closer. (set to -1 to disable)
-Config.CheckTargetsInterval     = 1 -- Check for new targets, or target validity, every "x" seconds
-Config.InvalidatePlayersFor     = 1 -- ignores a player for "x" seconds
-Config.DetectionDelay          = 1.5 -- delay in seconds before the monster starts chasing after detecting a player
+Config.CheckTargetsInterval     = 0.1 -- How often target sensing runs; lower values react faster but cost more server time.
+Config.PatrolRetryInterval       = 2 -- Wait before retrying if no patrol node is available.
+Config.SoundPathUpdateInterval   = 0.5 -- Limit repaths while following a sound source.
+Config.SoundPathUpdateDistance   = 3 -- Repath sooner if the sound source has moved this far.
+Config.DetectionDelay          = 0 -- Optional delay before a newly detected target; 0 reacts immediately.
 Config.InvestigateTime = 4 -- Сколько секунд монстр ищет на последней точке
 Config.WalkHearRange = 16 -- Расстояние слышимости ходьбы (очень маленькое)
 Config.FieldOfView = 120
-Config.MinTargetSwitchInterval = 2
+Config.MinTargetSwitchInterval = Config.SwapTargetsTimer
 Config.TargetSwitchAdvantage = 0.7
 
 -- == Additional Features Configuration == --
 Config.DoCornerChase			= true -- Chase to the last seen position of a target.
-Config.ReasonablePredictionDistance = 2 -- go x studs in the direction the player ran. 
-Config.IgnoreCornerChaseDistance = 20 -- Last spot the player was seen is ignored if the distance to next point is more than this value. (TP to base) 
+Config.ReasonablePredictionDistance = 2 -- Predict a short distance along the player's last sensed movement direction.
+Config.IgnoreCornerChaseDistance = 20 -- Abandon corner prediction if estimated travel since the last sight/sound is larger (e.g. teleport).
 Config.DoPatrolling				= true -- Enable patrolling to random nodes.
-Config.PatrollingNodes			= workspace:WaitForChild("nodes")
+Config.PatrollingNodes			= workspace:FindFirstChild("nodes") -- Optional; patrol retries if this folder is added later.
 
 -- == Debugging == --
-Config.Visualize                = true  -- Visualizes the path
-Config.Debugging                = true -- Prints important info from the script.
-Config.ForbiddenDebugging       = false -- really not recommended to enable this, even when debugging, serves mainly as a debugger for myself.
-Config.DebugLinks               = true -- Debugs pathfinding links, useful for development of new link types.
+Config.Visualize                = false -- Enable temporarily when debugging pathfinding.
+Config.Debugging                = false -- Keep the server output quiet during normal play.
+Config.ForbiddenDebugging       = false -- Mostly intended for debugging the Forbidden pathfinding library.
+Config.DebugLinks               = false -- Enable temporarily when developing pathfinding links.
 Config.IgnoreDefaultLinkMessage = false -- ignore the default message when a pathfinding link is not found.
 Config.IgnoreNoLabelLinkMessage = false -- ignore the default message when a pathfinding link with NoLabel is found
 

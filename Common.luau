@@ -6,7 +6,7 @@ local rs = game:GetService("ReplicatedStorage")
 
 -- == References == --
 local NPC       = script.Parent.Parent
-local Root      = NPC.PrimaryPart
+local Root      = NPC:FindFirstChild("HumanoidRootPart") or NPC.PrimaryPart
 
 
 -- == Forbidden Architecture == --
@@ -41,27 +41,43 @@ Returns math.huge if invalid
 
 ]=]--
 Common.GetDistanceFromNPC = function(Target: Instance): number
-	local TargetRoot: BasePart = nil
+	if not Target then
+		return math.huge
+	end
 
+	local TargetRoot: BasePart? = nil
 	if Target:IsA("Player") then
-		local char = Target.Character
-		TargetRoot = char.PrimaryPart :: any
-	end
-
-	if Target:IsA("Model") then
-		TargetRoot = Target.PrimaryPart :: any
-		if not TargetRoot then
-			TargetRoot = Target:FindFirstChildOfClass("BasePart") :: any
+		local character = Target.Character
+		if character then
+			TargetRoot = character.PrimaryPart
+			if not TargetRoot then
+				local humanoidRoot = character:FindFirstChild("HumanoidRootPart")
+				if humanoidRoot and humanoidRoot:IsA("BasePart") then
+					TargetRoot = humanoidRoot
+				end
+			end
 		end
-	end
-
-	if Target:IsA("BasePart") then
+	elseif Target:IsA("Model") then
+		TargetRoot = Target.PrimaryPart
+		if not TargetRoot then
+			local humanoidRoot = Target:FindFirstChild("HumanoidRootPart")
+			if humanoidRoot and humanoidRoot:IsA("BasePart") then
+				TargetRoot = humanoidRoot
+			else
+				TargetRoot = Target:FindFirstChildWhichIsA("BasePart")
+			end
+		end
+	elseif Target:IsA("BasePart") then
 		TargetRoot = Target
 	end
 
-	if not TargetRoot then warn("Issue getting the Target's root: " .. Target:GetFullName()); return math.huge end
+	local npcRoot = Root or NPC.PrimaryPart or NPC:FindFirstChild("HumanoidRootPart")
+	if not npcRoot or not npcRoot:IsA("BasePart") or not TargetRoot then
+		warn("Issue getting a root part for distance measurement")
+		return math.huge
+	end
 
-	return (Root.CFrame.Position - TargetRoot.CFrame.Position).Magnitude
+	return (npcRoot.Position - TargetRoot.Position).Magnitude
 end
 
 Common.SetHooksForConfig = function()
