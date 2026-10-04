@@ -14,8 +14,17 @@ local Common		= require(script.Common)
 
 -- == References == --
 local NPC			= script.Parent
-local Root			= NPC:WaitForChild("HumanoidRootPart")
-local Human			= NPC:FindFirstChildOfClass("Humanoid")
+assert(NPC:IsA("Model"), "[AI] The tracking script must be parented to an NPC Model")
+
+local Root			= NPC:WaitForChild("HumanoidRootPart", 10)
+if not Root or not Root:IsA("BasePart") then
+	error("[AI] NPC " .. NPC.Name .. " is missing a BasePart named HumanoidRootPart")
+end
+
+local Human			= NPC:FindFirstChildOfClass("Humanoid") or NPC:WaitForChild("Humanoid", 10)
+if not Human or not Human:IsA("Humanoid") then
+	error("[AI] NPC " .. NPC.Name .. " is missing a Humanoid")
+end
 
 -- == Configuration == --
 local Config		= require(script.Config)
@@ -29,6 +38,7 @@ local PreInit			= require(hooksFolder.PreInitialization)
 local PostInit			= require(hooksFolder.PostInitialization)
 local Heartbeat			= require(hooksFolder.Heartbeat)
 local DoingNothing		= require(hooksFolder.DoingNothing)
+local PatrolStateManager	= require(hooksFolder.PatrolStateManager)
 
 -- == Animation System == --
 -- Стандартный Animate (LocalScript) не работает для NPC на сервере,
@@ -46,17 +56,23 @@ local currentAnimTrack = nil
 local currentAnimName = nil
 
 local function loadAnim(id: string?)
-	if not id or id == "" then return nil end
+	if not id or id == "" then
+		return nil
+	end
+
 	local anim = Instance.new("Animation")
-	anim.AnimationId = id
 	local ok, track = pcall(function()
+		anim.AnimationId = id
 		return animator:LoadAnimation(anim)
 	end)
+	anim:Destroy()
+
 	if ok and track then
+		track.Looped = true
 		return track
 	end
 	if Config.Debugging then
-		warn("[АНИМАЦИИ] Не удалось загрузить анимацию: " .. tostring(id))
+		warn("[АНИМАЦИИ] Не удалось загрузить анимацию: " .. tostring(id) .. " (проверьте ID и права доступа)")
 	end
 	return nil
 end
@@ -68,28 +84,45 @@ if animConfig.Enabled ~= false then
 end
 
 local function playAnimation(animName: string, fadeTime: number?, speed: number?)
-	if loadedAnims.Idle == nil then return end -- анимации отключены или не загрузились
+	local track = loadedAnims[animName]
+	local selectedName = animName
 
-	-- Уже играем эту анимацию — только подстраиваем скорость при необходимости
-	if currentAnimName == animName then
-		if currentAnimTrack and speed and currentAnimTrack.Speed ~= speed then
-			currentAnimTrack:AdjustSpeed(speed)
+	-- Missing custom run/walk assets should not prevent the other animations from playing.
+	if not track and animName == "Run" then
+		track = loadedAnims.Walk or loadedAnims.Idle
+		selectedName = loadedAnims.Walk and "Walk" or "Idle"
+		speed = nil
+	elseif not track and animName == "Walk" then
+		track = loadedAnims.Run or loadedAnims.Idle
+		selectedName = loadedAnims.Run and "Run" or "Idle"
+		speed = nil
+	end
+	if not track then
+		if currentAnimTrack then
+			currentAnimTrack:Stop(fadeTime or 0.2)
+			currentAnimTrack = nil
+			currentAnimName = nil
 		end
 		return
 	end
 
-	local track = loadedAnims[animName]
-	if not track then return end
+	if currentAnimName == selectedName and currentAnimTrack == track and track.IsPlaying then
+		if speed and math.abs(track.Speed - speed) > 0.01 then
+			track:AdjustSpeed(speed)
+		end
+		return
+	end
 
 	if currentAnimTrack then
 		currentAnimTrack:Stop(fadeTime or 0.2)
 	end
+	track.Priority = selectedName == "Idle" and Enum.AnimationPriority.Idle or Enum.AnimationPriority.Movement
 	track:Play(fadeTime or 0.2, 1, speed or 1)
 	currentAnimTrack = track
-	currentAnimName = animName
+	currentAnimName = selectedName
 
 	if Config.Debugging then
-		print(string.format("🎬 [АНИМАЦИЯ] -> %s", animName))
+		print(string.format("🎬 [АНИМАЦИЯ] -> %s", selectedName))
 	end
 end
 
@@ -121,86 +154,36 @@ if Config.InsertAntiLag then
 	AI.InsertAntiLag(NPC)
 end
 
-local function debugPrint(...)
-	if Config.Debugging then
-		local varArgs = {...}
-		local message = ""
-		for _, v in ipairs(varArgs) do
-			message = message .. tostring(v)
-		end
-		print("[@DEBUG TrackClosestPlayer] " .. message)
-	end
-end
-
--- =============================================
--- ПРОВЕРКА УГЛА ОБЗОРА (FOV)
--- =============================================
-
-local function isInFieldOfView(targetPosition: Vector3): boolean
-	local npcLookVector = Root.CFrame.LookVector
-	local directionToTarget = (targetPosition - Root.Position).Unit
-
-	-- Вычисляем угол между взглядом NPC и направлением к цели
-	local dotProduct = npcLookVector:Dot(directionToTarget)
-	local angle = math.deg(math.acos(dotProduct))
-
-	local maxAngle = Config.FieldOfView or 120 -- градусов (по умолчанию 120°)
-	local halfFOV = maxAngle / 2
-
-	if Config.Debugging then
-		-- print(string.format("   └─ 👁️ [УГОЛ ОБЗОРА] Угол: %.1f° | Макс: %.1f° | В поле зрения: %s", angle, halfFOV, tostring(angle <= halfFOV)))
-	end
-
-	return angle <= halfFOV
-end
-
 -- =============================================
 -- БАЗОВЫЕ ПРОВЕРКИ ИГРОКА
 -- =============================================
 
-local invalidPlayers = {}
-
 local function isPlayerAlive(player: Player): boolean
-	if player == nil then return false end
-	local char = player.Character
-	if char == nil then return false end
-	local hrt = char:FindFirstChild("HumanoidRootPart")
-	if hrt == nil then return false end
-	local human = char:FindFirstChild("Humanoid")
-	if human == nil then return false end
-	if human.Health <= 0 then return false end
-	if invalidPlayers[player] ~= nil then
-		if os.clock() - invalidPlayers[player] < Config.InvalidatePlayersFor then
-			return false
-		end
-	end
-	return true
-end
-
-local function canSeePlayer(player: Player): boolean
-	if not isPlayerAlive(player) then return false end
-
-	local char = player.Character
-	local targetRoot = char:FindFirstChild("HumanoidRootPart")
-	if not targetRoot then return false end
-
-	-- ПРОВЕРКА 1: Угол обзора (FOV)
-	if not isInFieldOfView(targetRoot.Position) then
-		if Config.Debugging then
-			-- print(string.format("👁️❌ [ЗРЕНИЕ] %s вне поля зрения (за спиной)", player.Name))
-		end
+	if not player or player.Parent ~= players then
 		return false
 	end
 
-	-- ПРОВЕРКА 2: Raycast видимость (стены, препятствия)
-	local canSee = IsTargetValid(NPC, player)
-
-	if Config.Debugging then
-		if canSee then
-			print(string.format("👁️✅ [ЗРЕНИЕ] Вижу %s", player.Name))
-		end
+	local char = player.Character
+	if not char then
+		return false
 	end
 
+	local root = char:FindFirstChild("HumanoidRootPart")
+	local humanoid = char:FindFirstChildOfClass("Humanoid")
+	return root ~= nil and root:IsA("BasePart") and humanoid ~= nil and humanoid.Health > 0
+end
+
+local function canSeePlayer(player: Player): boolean
+	if not isPlayerAlive(player) then
+		return false
+	end
+
+	-- The shared hook checks range, field of view and line of sight so the
+	-- acquisition and chase-continuation checks use identical vision rules.
+	local canSee = IsTargetValid(NPC, player)
+	if canSee and Config.Debugging then
+		print(string.format("👁️✅ [ЗРЕНИЕ] Вижу %s", player.Name))
+	end
 	return canSee
 end
 
@@ -286,9 +269,25 @@ local function canHearPlayer(player: Player): boolean
 	return false
 end
 
-local function isValidTarget(player: Player): boolean
+local cachedPlayerSenses = {}
+
+local function getPlayerSenses(player: Player): (boolean, boolean)
+	local cached = cachedPlayerSenses[player]
+	if cached then
+		return cached.canSee, cached.canHear
+	end
+
 	local canSee = canSeePlayer(player)
-	local canHear = canHearPlayer(player)
+	local canHear = not canSee and canHearPlayer(player)
+	cachedPlayerSenses[player] = {
+		canSee = canSee,
+		canHear = canHear,
+	}
+	return canSee, canHear
+end
+
+local function isValidTarget(player: Player): boolean
+	local canSee, canHear = getPlayerSenses(player)
 
 	if Config.Debugging and (canSee or canHear) then
 		print(string.format("✅ [ВАЛИДНАЯ ЦЕЛЬ] %s | Вижу: %s | Слышу: %s", 
@@ -309,6 +308,7 @@ local lastDetectMethod = ""
 local lastTarget = nil
 
 local function getClosestPlayer()
+	cachedPlayerSenses = {}
 	local closestPlayer = nil
 	local closestDistance = math.huge
 	local detectMethod = ""
@@ -322,13 +322,14 @@ local function getClosestPlayer()
 
 		local distance = (Root.Position - targetRoot.Position).Magnitude
 
-		if canSeePlayer(player) then
+		local canSee, canHear = getPlayerSenses(player)
+		if canSee then
 			if distance < closestDistance then
 				closestDistance = distance
 				closestPlayer = player
 				detectMethod = "👁️ ЗРЕНИЕ"
 			end
-		elseif canHearPlayer(player) then
+		elseif canHear then
 			if distance < closestDistance then
 				closestDistance = distance
 				closestPlayer = player
@@ -365,6 +366,9 @@ end
 -- =============================================
 
 local chasingPlayer = nil
+local pendingDetectionTarget: Player? = nil
+local pendingDetectionSince = 0
+local DETECTION_DELAY = math.max(tonumber(Config.DetectionDelay) or 0, 0)
 local lastTargetSwitchTime = 0
 
 local function shouldSwitchTarget(newTarget: Player): boolean
@@ -372,8 +376,14 @@ local function shouldSwitchTarget(newTarget: Player): boolean
 	if chasingPlayer == nil then return true end
 	if newTarget == chasingPlayer then return false end
 
-	-- Защита от постоянного переключения
-	if os.clock() - lastTargetSwitchTime < (Config.MinTargetSwitchInterval or 2) then
+	-- Never keep chasing a dead, departed or respawning target just to honor the cooldown.
+	if not isPlayerAlive(chasingPlayer) then
+		return true
+	end
+
+	-- Защита от постоянного переключения. A negative value disables the cooldown.
+	local switchCooldown = tonumber(Config.MinTargetSwitchInterval or Config.SwapTargetsTimer) or 2
+	if switchCooldown >= 0 and os.clock() - lastTargetSwitchTime < switchCooldown then
 		if Config.Debugging then
 			print("⏱️ [СМЕНА ЦЕЛИ] Слишком рано переключаться (защита от спама)")
 		end
@@ -383,12 +393,14 @@ local function shouldSwitchTarget(newTarget: Player): boolean
 	local currentChar = chasingPlayer.Character
 	local newChar = newTarget.Character
 
-	if not currentChar or not newChar then return false end
+	if not currentChar then return true end
+	if not newChar then return false end
 
 	local currentRoot = currentChar:FindFirstChild("HumanoidRootPart")
 	local newRoot = newChar:FindFirstChild("HumanoidRootPart")
 
-	if not currentRoot or not newRoot then return false end
+	if not currentRoot then return true end
+	if not newRoot then return false end
 
 	local distToCurrent = (Root.Position - currentRoot.Position).Magnitude
 	local distToNew = (Root.Position - newRoot.Position).Magnitude
@@ -453,14 +465,28 @@ end
 
 local investigating = false
 local investigateUntil = 0
-local investigatePosition = nil
 
 local isPatrolling = false
 local currentPatrolNode = nil
 local patrolNodeReachedTime = 0
 local patrolStartTime = 0
+local nextPatrolRetryTime = 0
 
-local INVESTIGATE_TIME = Config.InvestigateTime or 4
+local INVESTIGATE_TIME = math.max(tonumber(Config.InvestigateTime) or 4, 0)
+local PATROL_RETRY_INTERVAL = math.max(tonumber(Config.PatrolRetryInterval) or 2, 0.1)
+
+local function requestNextPatrolNode()
+	currentPatrolNode = DoingNothing()
+	patrolNodeReachedTime = 0
+	patrolStartTime = os.clock()
+
+	if isNodeValid(currentPatrolNode) then
+		nextPatrolRetryTime = 0
+	else
+		-- Avoid calling the patrol hook every 0.1 seconds when there are no nodes.
+		nextPatrolRetryTime = os.clock() + PATROL_RETRY_INTERVAL
+	end
+end
 
 local function startPatrol()
 	if isPatrolling then return end
@@ -469,6 +495,8 @@ local function startPatrol()
 	chasingPlayer = nil
 	patrolNodeReachedTime = 0
 	patrolStartTime = os.clock()
+	NPC:SetAttribute("IsChasing", false)
+	NPC:SetAttribute("ChaseTargetUserId", nil)
 
 	if Config.Debugging then
 		print("🚶‍♂️ [ПАТРУЛЬ АКТИВИРОВАН] Монстр начал патрулирование")
@@ -476,59 +504,62 @@ local function startPatrol()
 
 	AI.Stop(NPC)
 	Human.WalkSpeed = Config.PatrolWalkSpeed or Config.WalkSpeed or 8
-	currentPatrolNode = DoingNothing()
+	requestNextPatrolNode()
 end
 
 local function updatePatrol()
 	if not isPatrolling then return end
 
-	-- Если нода не выбрана или невалидна
 	if not isNodeValid(currentPatrolNode) then
-		currentPatrolNode = DoingNothing()
-		patrolNodeReachedTime = 0
-		patrolStartTime = os.clock()
+		if os.clock() >= nextPatrolRetryTime then
+			requestNextPatrolNode()
+		end
 		return
 	end
 
 	local nodePos = getNodePosition(currentPatrolNode)
 	if not nodePos then
-		currentPatrolNode = DoingNothing()
-		patrolNodeReachedTime = 0
-		patrolStartTime = os.clock()
+		currentPatrolNode = nil
+		nextPatrolRetryTime = os.clock() + PATROL_RETRY_INTERVAL
 		return
 	end
 
 	local dist = (Root.Position - nodePos).Magnitude
 	local timeWalking = os.clock() - patrolStartTime
 
-	-- Дошел до точки ИЛИ идем к ней слишком долго (> 15 сек)
+	-- Reached the node, or give up on a path that has taken too long.
 	if dist <= 5 or timeWalking > 15 then
 		if patrolNodeReachedTime == 0 then
 			patrolNodeReachedTime = os.clock()
 			if Config.Debugging then
 				local name = (typeof(currentPatrolNode) == "Instance") and currentPatrolNode.Name or "Точка"
-				print(string.format("📍 [ПАТРУЛЬ] Дошел до точки '%s', осмотр местности...", name))
+				print(string.format("📍 [ПАТРУЛЬ] Дошел до точки '%s', осматриваюсь...", name))
 			end
-		elseif os.clock() - patrolNodeReachedTime >= 2 then -- Ждет 2 секунды на точке
-			patrolNodeReachedTime = 0
-			patrolStartTime = os.clock()
+		elseif os.clock() - patrolNodeReachedTime >= 2 then
 			if Config.Debugging then
 				print("🚶‍♂️ [ПАТРУЛЬ] Иду к следующей точке...")
 			end
-			currentPatrolNode = DoingNothing() -- Выбираем следующую ноду!
+			requestNextPatrolNode()
 		end
 	end
 end
 
-local function startInvestigation(lastKnownPos)
+local function startInvestigation(lastKnownPos: Vector3, target: Player?)
+	if typeof(lastKnownPos) ~= "Vector3" then
+		startPatrol()
+		return
+	end
+
 	isPatrolling = false
 	investigating = true
 	investigateUntil = os.clock() + INVESTIGATE_TIME
-	investigatePosition = lastKnownPos
-	Human.WalkSpeed = Config.ChaseWalkSpeed
+	Human.WalkSpeed = Config.ChaseWalkSpeed or Config.WalkSpeed or 16
+	if target then
+		PatrolStateManager.SetTargetInfo(target, lastKnownPos)
+	end
 
 	if Config.Debugging then
-		warn(string.format("🔍 [РАССЛЕДОВАНИЕ НАЧАТО] Бегу к точке (%.1f, %.1f, %.1f) | Время: %d сек", 
+		warn(string.format("🔍 [РАССЛЕДОВАНИЕ НАЧАТО] Иду к последней известной точке (%.1f, %.1f, %.1f) | Время: %.1f сек",
 			lastKnownPos.X, lastKnownPos.Y, lastKnownPos.Z, INVESTIGATE_TIME))
 	end
 
@@ -538,8 +569,7 @@ end
 local function stopInvestigation()
 	if not investigating then return end
 	investigating = false
-	investigatePosition = nil
-	Human.WalkSpeed = Config.PatrolWalkSpeed or Config.WalkSpeed
+	Human.WalkSpeed = Config.PatrolWalkSpeed or Config.WalkSpeed or 8
 
 	if Config.Debugging then
 		warn("🔍 [РАССЛЕДОВАНИЕ ОКОНЧЕНО] Никого не нашёл, возвращаюсь к патрулю")
@@ -553,12 +583,13 @@ end
 -- =============================================
 
 local function startChasing(target: Player)
-	-- КРИТИЧЕСКИЙ ФИКС: СРАЗУ МГНОВЕННО ОСТАНАВЛИВАЕМ ПАТРУЛЬ В AI!
+	-- Stop an old patrol/investigation path before starting the new chase.
 	AI.Stop(NPC)
+	pendingDetectionTarget = nil
+	pendingDetectionSince = 0
 
 	isPatrolling = false
 	investigating = false
-	investigatePosition = nil
 
 	if Config.Debugging then
 		warn(string.format("🚨 [ПОГОНЯ НАЧАТА] Цель: %s | Метод: %s", target.Name, lastDetectMethod))
@@ -568,14 +599,20 @@ local function startChasing(target: Player)
 	lastTargetSwitchTime = os.clock()
 	NPC:SetAttribute("IsChasing", true)
 	NPC:SetAttribute("ChaseTargetUserId", target.UserId)
-	Human.WalkSpeed = Config.ChaseWalkSpeed
+	Human.WalkSpeed = Config.ChaseWalkSpeed or Config.WalkSpeed or 16
+
+	local targetCharacter = target.Character
+	local targetRoot = targetCharacter and targetCharacter:FindFirstChild("HumanoidRootPart")
+	if targetRoot and targetRoot:IsA("BasePart") then
+		PatrolStateManager.SetTargetInfo(target, targetRoot.Position)
+	end
 
 	local config = AI.GetConfig(NPC)
 	config:RestoreDefaults()
-	config.Tracking.Enabled			= true
-	config.Visualization.Enabled	= Config.Visualize
-	config.Debugging.Enabled		= Config.ForbiddenDebugging
-	config.AgentInfo				= Config.GetAgentInfo()
+	config.Tracking.Enabled = true
+	config.Visualization.Enabled = Config.Visualize
+	config.Debugging.Enabled = Config.ForbiddenDebugging
+	config.AgentInfo = Config.GetAgentInfo()
 	Common.SetHooksForConfig()
 
 	AI.SmartPathfind(NPC, target)
@@ -597,9 +634,9 @@ end
 -- =============================================
 
 local function coreLoop()
+	local targetCheckInterval = math.max(tonumber(Config.CheckTargetsInterval) or 0.1, 0.05)
 	while NPC and NPC.Parent do
-		-- ЧАСТАЯ ПРОВЕРКА (0.1 сек вместо 1.0 сек), чтобы реакция на ходу была МГНОВЕННОЙ!
-		task.wait(0.1)
+		task.wait(targetCheckInterval)
 
 		if Interrupt(NPC) then continue end
 
@@ -640,41 +677,26 @@ local function coreLoop()
 				continue
 			end
 
-			local stillValid = isValidTarget(chasingPlayer)
-			local continueResult = ContinueChasing(NPC, chasingPlayer)
+			local target = chasingPlayer
+			local canSee, canHear = getPlayerSenses(target)
+			local stillValid = canSee or canHear
+			local continueResult = ContinueChasing(NPC, target, canSee, canHear)
 
-			if stillValid then
-				continue
-			elseif not continueResult then
-				if canHearPlayer(chasingPlayer) then
-					if Config.Debugging then
-						print(string.format("👁️❌👂✅ [ПОТЕРЯН ИЗ ВИДУ] Но слышу %s!", chasingPlayer.Name))
-					end
-					local targetRoot = chasingPlayer.Character and chasingPlayer.Character:FindFirstChild("HumanoidRootPart")
-					if targetRoot then
-						AI.SmartPathfind(NPC, targetRoot.Position)
-					end
+			if not stillValid and not continueResult then
+				if Config.Debugging then
+					warn(string.format("❌ [ЦЕЛЬ ПОТЕРЯНА] %s пропал → расследую последнюю точку", target.Name))
+				end
+
+				-- Do not read the player's live position after losing sight/hearing.
+				-- ContinueChasing stores the last sensed (or predicted corner) position.
+				local lastKnownPosition = PatrolStateManager.RetrieveInformation()
+				stopChasing()
+
+				if lastKnownPosition then
+					startInvestigation(lastKnownPosition, target)
 				else
-					if Config.Debugging then
-						warn(string.format("❌ [ЦЕЛЬ ПОТЕРЯНА] %s пропал → расследование", chasingPlayer.Name))
-					end
-
-					local lastPos = nil
-					local targetChar = chasingPlayer.Character
-					if targetChar then
-						local targetRoot = targetChar:FindFirstChild("HumanoidRootPart")
-						if targetRoot then
-							lastPos = targetRoot.Position
-						end
-					end
-
-					stopChasing()
-
-					if lastPos then
-						startInvestigation(lastPos)
-					else
-						startPatrol()
-					end
+					PatrolStateManager.Clear()
+					startPatrol()
 				end
 			end
 
@@ -686,13 +708,20 @@ local function coreLoop()
 		-- =======================================
 		if chasingPlayer == nil and not investigating then
 			if closestPlayer ~= nil then
-				if Config.Debugging then
-					warn(string.format("⏱️ [ОБНАРУЖЕНИЕ] Цель %s найдена!", closestPlayer.Name))
+				if pendingDetectionTarget ~= closestPlayer then
+					pendingDetectionTarget = closestPlayer
+					pendingDetectionSince = os.clock()
 				end
 
-				-- КРИТИЧЕСКИЙ ФИКС: Убрали task.wait(Config.DetectionDelay), чтобы монстр реагировал МОМЕНТАЛЬНО!
-				startChasing(closestPlayer)
+				if os.clock() - pendingDetectionSince >= DETECTION_DELAY then
+					if Config.Debugging then
+						warn(string.format("⏱️ [ОБНАРУЖЕНИЕ] Цель %s найдена!", closestPlayer.Name))
+					end
+					startChasing(closestPlayer)
+				end
 			else
+				pendingDetectionTarget = nil
+				pendingDetectionSince = 0
 				-- НЕТ ЦЕЛЕЙ - ПАТРУЛЬ!
 				if not isPatrolling then
 					startPatrol()
@@ -706,8 +735,22 @@ end
 
 task.spawn(PostInit, NPC)
 
-run.Heartbeat:Connect(function()
-	Heartbeat(NPC, chasingPlayer)
+local heartbeatHookWarned = false
+local heartbeatConnection
+heartbeatConnection = run.Heartbeat:Connect(function()
+	if not NPC.Parent then
+		heartbeatConnection:Disconnect()
+		if currentAnimTrack then
+			currentAnimTrack:Stop(0.1)
+		end
+		return
+	end
+
+	local ok, err = pcall(Heartbeat, NPC, chasingPlayer)
+	if not ok and not heartbeatHookWarned then
+		heartbeatHookWarned = true
+		warn("[AI] Ошибка в Hooks.Heartbeat: " .. tostring(err))
+	end
 	updateAnimation()
 end)
 

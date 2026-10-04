@@ -4,8 +4,16 @@ return function(NPC: Model, WP: PathWaypoint)
 
 	-- MoveTo example
 	local human = NPC:FindFirstChildOfClass("Humanoid")
+	if not human then
+		warn("[PATH LINK] NPC " .. NPC.Name .. " has no Humanoid.")
+		return false
+	end
+
 	human:MoveTo(WP.Position)
-	human.MoveToFinished:Wait()
+	local reached = human.MoveToFinished:Wait()
+	if not reached then
+		return false
+	end
 
 	-- resume pathfind when MoveTo complete
 	return true

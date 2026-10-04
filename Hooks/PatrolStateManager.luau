@@ -1,49 +1,29 @@
---[[
-
-THIS ACTUALLY ISN'T A HOOK! But it's to show how to implement a 
-shared state ( or singleton for my Java devs :) ) between multiple 
-hooks.
-	- rman501
-
-]]--
-
-
-local Common = require(script.Parent.Parent.Common)
-
--- return false to stop chasing the target
+-- Shared last-known target information for the chase and patrol hooks.
 local PatrolStateManager = {}
 
-local StoredTarget = nil
-local StoredPoint = nil
+local storedTarget: Instance? = nil
+local storedPoint: Vector3? = nil
 
-PatrolStateManager.SetTargetInfo = function(Target: Instance, Point: Vector3)
-	if Target then
-		StoredTarget = Target
-		StoredPoint = Point
+function PatrolStateManager.SetTargetInfo(target: Instance?, point: Vector3?)
+	if target ~= nil and typeof(point) == "Vector3" then
+		storedTarget = target
+		storedPoint = point
 	end
 end
 
-PatrolStateManager.GetTarget = function()
-	return StoredTarget
+function PatrolStateManager.GetTarget(): Instance?
+	return storedTarget
 end
 
-PatrolStateManager.RetrieveInformation = function()
-	
-	if not StoredTarget then return nil, nil end
-	
-	local char = StoredTarget.Character
-	if char == nil then return nil, nil end
-	
-	local human = char:FindFirstChildOfClass("Humanoid")
-	if human == nil then return nil, nil end
-	if human.Health == 0 then return nil, nil end
-	
-	return StoredPoint
+function PatrolStateManager.RetrieveInformation(): Vector3?
+	-- Keep the last known point even if the player respawns or leaves. The state is
+	-- cleared when the patrol consumes it or when the caller decides to abandon it.
+	return storedPoint
 end
 
-PatrolStateManager.Clear = function()
-	StoredTarget = nil
-	StoredPoint = nil
+function PatrolStateManager.Clear()
+	storedTarget = nil
+	storedPoint = nil
 end
 
 return PatrolStateManager
